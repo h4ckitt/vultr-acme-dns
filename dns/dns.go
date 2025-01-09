@@ -7,20 +7,16 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+
+	"vultr-dns/structures"
 )
 
 const vultrAPIBaseURL = "https://api.vultr.com/v2"
 
-type DNSRecord struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Data string `json:"data"`
-	TTL  int    `json:"ttl"`
-}
-
-func CreateTXTRecord(apiKey, domain, name, value string) error {
-	record := DNSRecord{
+func CreateTXTRecord(domain, name, value, token string) error {
+	record := structures.DNSRecord{
 		Name: name,
 		Type: "TXT",
 		Data: value,
@@ -32,26 +28,21 @@ func CreateTXTRecord(apiKey, domain, name, value string) error {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
 
-	log.Println(string(payload))
-
-	log.Printf("Creating DNS Record For Domain %s", domain)
 	url := fmt.Sprintf("%s/domains/%s/records", vultrAPIBaseURL, domain)
-
-	log.Printf("Calling URL: %s", url)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %v", err)
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -65,59 +56,19 @@ func CreateTXTRecord(apiKey, domain, name, value string) error {
 	return nil
 }
 
-func DeleteTXTRecord(apiKey, domain, name string) error {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/domains/%s/records", vultrAPIBaseURL, domain), nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error: %s", body)
-	}
-
-	var records struct {
-		Records []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Type string `json:"type"`
-		} `json:"records"`
-	}
-	err = json.NewDecoder(resp.Body).Decode(&records)
-	if err != nil {
-		return fmt.Errorf("failed to parse response: %v", err)
-	}
-
-	var recordID string
-	for _, record := range records.Records {
-		if record.Name == "_acme-challenge" && record.Type == "TXT" {
-			recordID = record.ID
-			break
-		}
-	}
-
-	if recordID == "" {
-		return fmt.Errorf("TXT record not found for deletion")
-	}
-
-	req, err = http.NewRequest("DELETE", fmt.Sprintf("%s/domains/%s/records/%s", vultrAPIBaseURL, domain, recordID), nil)
+func DeleteTXTRecord(domain, recordID, token string) error {
+	req, err := http.NewRequest("DELETE", fmt.Sprintf("%s/domains/%s/records/%s", vultrAPIBaseURL, domain, recordID), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create delete request: %v", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
-	resp, err = client.Do(req)
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make delete request: %v", err)
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
@@ -126,4 +77,43 @@ func DeleteTXTRecord(apiKey, domain, name string) error {
 	}
 
 	return nil
+}
+
+func FetchDNSRecord(domain, txtValue, token string) (record structures.DNSRecord, err error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/domains/%s/records", vultrAPIBaseURL, domain), http.NoBody)
+	if err != nil {
+		return
+	}
+
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("Failed To Fetch DNS Records: %v\n", err)
+		return
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Failed To Fetch DNS Records, API Error: %s\n", string(body))
+		return
+	}
+
+	var res structures.FetchDNSRecord
+
+	if err = json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		log.Printf("Failed To Fetch DNS Records: %v\n", err)
+		return
+	}
+
+	for _, result := range res.Records {
+		if result.Type == "TXT" && strings.Contains(result.Data, txtValue) {
+			record = result
+			return
+		}
+	}
+
+	return
 }
