@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -29,7 +30,7 @@ func main() {
 			log.Printf("Failed To Delete TXT Record For %s: %v\n", domain, err)
 		}
 	} else {
-		if err = dns.CreateTXTRecord(domain, "_acme-challenge", txtValue, token); err != nil {
+		if err = dns.CreateTXTRecord(domain, fmt.Sprintf("_acme-challenge.%s", domain), txtValue, token); err != nil {
 			log.Printf("Failed To Create TXT Record For %s: %v\n", domain, err)
 		}
 	}
